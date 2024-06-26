@@ -1,0 +1,711 @@
+// ffmpeg -framerate 30 -pattern_type glob -i '*.png' -c:v libx264 -pix_fmt yuv420p out.mp4
+
+#include <stdlib.h>
+#include <stdio.h> 
+#include <math.h>
+#include <iostream>
+
+using namespace std;
+
+typedef unsigned char uchar;
+
+struct uchar4 {
+	uchar x;
+	uchar y;
+	uchar z;
+	uchar w;
+};
+
+struct vec3 {
+	double x;
+	double y;
+	double z;
+};
+
+double dot(vec3 a, vec3 b) {
+	return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+/*
+| i  j  k  |
+| x1 y1 z1 | = i * (y1 * z2 - z1 * y2) + j * ... + k * ...
+| x2 y2 z2 |
+*/
+
+vec3 prod(vec3 a, vec3 b) {
+	return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z,  a.x * b.y - a.y * b.x};
+}
+
+vec3 norm(vec3 v) {
+	double l = sqrt(dot(v, v));
+	return {v.x / l, v.y / l, v.z / l};
+}
+
+vec3 diff(vec3 a, vec3 b) {
+	return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+vec3 add(vec3 a, vec3 b) {
+	return {a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+vec3 mult(vec3 a, vec3 b, vec3 c, vec3 v) {
+	return {a.x * v.x + b.x * v.y + c.x * v.z,
+			a.y * v.x + b.y * v.y + c.y * v.z,
+			a.z * v.x + b.z * v.y + c.z * v.z};
+}
+
+void print(vec3 v) {
+	printf("%e %e %e\n", v.x, v.y, v.z);
+}
+
+
+vec3 to_normal(double r, double phi, double z) {
+    return { r * cos(phi), r * sin(phi), z };
+}
+
+vec3 dots3_1[60];
+
+void make_points_icos(vec3 a, vec3 b, vec3 c, double d, int i) {
+    vec3 norma = prod(diff(b, a), diff(c, a));
+    norma = norm(norma);
+    norma = { norma.x * d, norma.y * d, norma.z * d };
+
+    dots3_1[i] = { a.x + norma.x, a.y + norma.y, a.z + norma.z };
+    dots3_1[i + 1] = { b.x + norma.x, b.y + norma.y, b.z + norma.z };
+    dots3_1[i + 2] = { c.x + norma.x, c.y + norma.y, c.z + norma.z };
+}
+
+struct trig {
+    vec3 a;
+    vec3 b;
+    vec3 c;
+    double4 color;
+    double coef_refl;
+    double coef_transp;
+    bool is_edge = false;
+    int pair = 0;
+    int number_of_lights = 0;
+    bool is_floor = false;
+    double4 clr_floor = { 0.0, 0.0, 0.0, 255 };
+};
+
+trig* trigs;
+int N = 207;
+
+void build_space(vec3 c1, double4 clr1, double r1, double coef_refl1, double coef_transp1, int number_of_lights1,
+    vec3 c2, double4 clr2, double r2, double coef_refl2, double coef_transp2, int number_of_lights2,
+    vec3 c3, double4 clr3, double r3, double coef_refl3, double coef_transp3, int number_of_lights3,
+    vec3 pnt1, vec3 pnt2, vec3 pnt3, vec3 pnt4, double4 clr_fl, double coef_fl) {
+
+    //пол
+
+
+    trigs[0] = { pnt4, pnt3, pnt2, clr_fl, coef_fl, 0.0 };
+    trigs[1] = { pnt1, pnt4, pnt2, clr_fl, coef_fl, 0.0 };
+
+    trigs[0].is_floor = true;
+    trigs[1].is_floor = true;
+
+    trigs[0].clr_floor = clr_fl;
+    trigs[1].clr_floor = clr_fl;
+
+
+    //грани фигур
+
+    double4 clr4 = { 13.0 / 255.0, 42.0 / 255.0, 54.0 / 255.0, 255.0 };
+    double coef_refl4 = 0.5;
+    double coef_transp4 = 0.0;
+
+
+    //гексаэдр
+
+    double a1 = r1 / sqrt(3.0); // половина сторона куба
+    double d = a1 / 10.0;     // ширина грани
+
+    // точки гексаэдра
+    vec3 dots1[24] = {
+        //сдвиг по x
+        {c1.x + a1, c1.y + a1 - d, c1.z + a1 - d},
+        {c1.x + a1, c1.y + a1 - d, c1.z - a1 + d},
+        {c1.x + a1, c1.y - a1 + d, c1.z + a1 - d},
+        {c1.x + a1, c1.y - a1 + d, c1.z - a1 + d},
+
+        {c1.x - a1, c1.y + a1 - d, c1.z + a1 - d},
+        {c1.x - a1, c1.y + a1 - d, c1.z - a1 + d},
+        {c1.x - a1, c1.y - a1 + d, c1.z + a1 - d},
+        {c1.x - a1, c1.y - a1 + d, c1.z - a1 + d},
+
+        //сдвиг по y
+
+        {c1.x + a1 - d, c1.y + a1, c1.z + a1 - d},
+        {c1.x + a1 - d, c1.y + a1, c1.z - a1 + d},
+        {c1.x - a1 + d, c1.y + a1, c1.z + a1 - d},
+        {c1.x - a1 + d, c1.y + a1, c1.z - a1 + d},
+
+        {c1.x + a1 - d, c1.y - a1, c1.z + a1 - d},
+        {c1.x + a1 - d, c1.y - a1, c1.z - a1 + d},
+        {c1.x - a1 + d, c1.y - a1, c1.z + a1 - d},
+        {c1.x - a1 + d, c1.y - a1, c1.z - a1 + d},
+
+        //сдвиг по z
+
+        {c1.x + a1 - d, c1.y + a1 - d, c1.z + a1},
+        {c1.x + a1 - d, c1.y - a1 + d, c1.z + a1},
+        {c1.x - a1 + d, c1.y + a1 - d, c1.z + a1},
+        {c1.x - a1 + d, c1.y - a1 + d, c1.z + a1},
+
+        {c1.x + a1 - d, c1.y + a1 - d, c1.z - a1},
+        {c1.x + a1 - d, c1.y - a1 + d, c1.z - a1},
+        {c1.x - a1 + d, c1.y + a1 - d, c1.z - a1},
+        {c1.x - a1 + d, c1.y - a1 + d, c1.z - a1},
+
+    };
+
+    //грани
+
+    trigs[2] = { dots1[0], dots1[2], dots1[1],  clr1, coef_refl1, coef_transp1 };
+    trigs[3] = { dots1[3], dots1[1], dots1[2],  clr1, coef_refl1, coef_transp1 };
+
+    trigs[4] = { dots1[4], dots1[5], dots1[6],  clr1, coef_refl1, coef_transp1 };
+    trigs[5] = { dots1[7], dots1[6], dots1[5],  clr1, coef_refl1, coef_transp1 };
+
+    trigs[6] = { dots1[8], dots1[9], dots1[10],  clr1, coef_refl1, coef_transp1 };
+    trigs[7] = { dots1[11], dots1[10], dots1[9],  clr1, coef_refl1, coef_transp1 };
+
+    trigs[8] = { dots1[12], dots1[14], dots1[13],  clr1, coef_refl1, coef_transp1 };
+    trigs[9] = { dots1[15], dots1[13], dots1[14],  clr1, coef_refl1, coef_transp1 };
+
+    trigs[10] = { dots1[16], dots1[18], dots1[17],  clr1, coef_refl1, coef_transp1 };
+    trigs[11] = { dots1[19], dots1[17], dots1[18],  clr1, coef_refl1, coef_transp1 };
+
+    trigs[12] = { dots1[20], dots1[21], dots1[22],  clr1, coef_refl1, coef_transp1 };
+    trigs[13] = { dots1[23], dots1[22], dots1[21],  clr1, coef_refl1, coef_transp1 };
+
+    //точки
+
+    trigs[14] = { dots1[1], dots1[20], dots1[9],  clr4, coef_refl1, coef_transp1 };
+    trigs[15] = { dots1[3], dots1[13], dots1[21],  clr4, coef_refl1, coef_transp1 };
+
+    trigs[16] = { dots1[16], dots1[0], dots1[8],  clr4, coef_refl1, coef_transp1 };
+    trigs[17] = { dots1[17], dots1[12], dots1[2],  clr4, coef_refl1, coef_transp1 };
+
+    trigs[18] = { dots1[19], dots1[6], dots1[14],  clr4, coef_refl1, coef_transp1 };
+    trigs[19] = { dots1[18], dots1[10], dots1[4],  clr4, coef_refl1, coef_transp1 };
+
+    trigs[20] = { dots1[7], dots1[23], dots1[15],  clr4, coef_refl1, coef_transp1 };
+    trigs[21] = { dots1[5], dots1[11], dots1[22],  clr4, coef_refl1, coef_transp1 };
+
+    //рёбра
+
+    d = d / 2;
+
+    trigs[22] = { dots1[0], dots1[1], dots1[8], clr4, coef_refl4, coef_transp4, true, 23, number_of_lights1 };
+    trigs[23] = { dots1[9], dots1[8], dots1[1], clr4, coef_refl4, coef_transp4, true, 22, number_of_lights1 };
+
+    trigs[24] = { dots1[2], dots1[0], dots1[17], clr4, coef_refl4, coef_transp4, true, 25, number_of_lights1 };
+    trigs[25] = { dots1[16], dots1[17], dots1[0], clr4, coef_refl4, coef_transp4, true, 24, number_of_lights1 };
+
+    trigs[26] = { dots1[1], dots1[3], dots1[20], clr4, coef_refl4, coef_transp4, true, 27, number_of_lights1 };
+    trigs[27] = { dots1[21], dots1[20], dots1[3], clr4, coef_refl4, coef_transp4, true, 26, number_of_lights1 };
+
+    trigs[28] = { dots1[12], dots1[13], dots1[2], clr4, coef_refl4, coef_transp4, true, 29, number_of_lights1 };
+    trigs[29] = { dots1[3], dots1[2], dots1[13], clr4, coef_refl4, coef_transp4, true, 28, number_of_lights1 };
+
+
+    trigs[30] = { dots1[10], dots1[11], dots1[4], clr4, coef_refl4, coef_transp4, true, 31, number_of_lights1 };
+    trigs[31] = { dots1[5], dots1[4], dots1[11], clr4, coef_refl4, coef_transp4, true, 30, number_of_lights1 };
+
+    trigs[32] = { dots1[4], dots1[6], dots1[18], clr4, coef_refl4, coef_transp4, true, 33, number_of_lights1 };
+    trigs[33] = { dots1[19], dots1[18], dots1[6], clr4, coef_refl4, coef_transp4, true, 32, number_of_lights1 };
+
+    trigs[34] = { dots1[22], dots1[23], dots1[5], clr4, coef_refl4, coef_transp4, true, 35, number_of_lights1 };
+    trigs[35] = { dots1[7], dots1[5], dots1[23], clr4, coef_refl4, coef_transp4, true, 34, number_of_lights1 };
+
+    trigs[36] = { dots1[6], dots1[7], dots1[14], clr4, coef_refl4, coef_transp4, true, 37, number_of_lights1 };
+    trigs[37] = { dots1[15], dots1[14], dots1[7], clr4, coef_refl4, coef_transp4, true, 36, number_of_lights1 };
+
+
+    trigs[38] = { dots1[20], dots1[22], dots1[9], clr4, coef_refl4, coef_transp4, true, 39, number_of_lights1 };
+    trigs[39] = { dots1[11], dots1[9], dots1[22], clr4, coef_refl4, coef_transp4, true, 38, number_of_lights1 };
+
+    trigs[40] = { dots1[8], dots1[10], dots1[16], clr4, coef_refl4, coef_transp4, true, 41, number_of_lights1 };
+    trigs[41] = { dots1[18], dots1[16], dots1[10], clr4, coef_refl4, coef_transp4, true, 40, number_of_lights1 };
+
+
+    trigs[42] = { dots1[13], dots1[15], dots1[21], clr4, coef_refl4, coef_transp4, true, 43, number_of_lights1 };
+    trigs[43] = { dots1[23], dots1[21], dots1[15], clr4, coef_refl4, coef_transp4, true, 42, number_of_lights1 };
+
+    trigs[44] = { dots1[14], dots1[12], dots1[19], clr4, coef_refl4, coef_transp4, true, 45, number_of_lights1 };
+    trigs[45] = { dots1[17], dots1[19], dots1[12], clr4, coef_refl4, coef_transp4, true, 44, number_of_lights1 };
+
+    //октаэдр
+
+    double a2 = r2 * sqrt(2.0) / 2.0;   // половина стороны октаэдра
+    d = a2 / 20.0;
+
+    // точки октаэдра
+    vec3 dots2[24] = {
+            {c2.x + d, c2.y, c2.z + r2 - d * sqrt(2)},
+            {c2.x, c2.y + d, c2.z + r2 - d * sqrt(2)},
+            {c2.x, c2.y - d, c2.z + r2 - d * sqrt(2)},
+            {c2.x - d, c2.y, c2.z + r2 - d * sqrt(2)},
+
+            {c2.x + d, c2.y, c2.z - r2 + d * sqrt(2)},
+            {c2.x, c2.y + d, c2.z - r2 + d * sqrt(2)},
+            {c2.x, c2.y - d, c2.z - r2 + d * sqrt(2)},
+            {c2.x - d, c2.y, c2.z - r2 + d * sqrt(2)},
+
+            {c2.x + a2 - d * sqrt(2), c2.y + a2, c2.z + d},
+            {c2.x + a2 - d * sqrt(2), c2.y + a2, c2.z - d},
+            {c2.x + a2, c2.y + a2 - d * sqrt(2), c2.z + d},
+            {c2.x + a2, c2.y + a2 - d * sqrt(2), c2.z - d},
+
+            {c2.x + a2 - d * sqrt(2), c2.y - a2, c2.z + d},
+            {c2.x + a2 - d * sqrt(2), c2.y - a2, c2.z - d},
+            {c2.x + a2, c2.y - a2 + d * sqrt(2), c2.z + d},
+            {c2.x + a2, c2.y - a2 + d * sqrt(2), c2.z - d},
+
+            {c2.x - a2 + d * sqrt(2), c2.y + a2, c2.z + d},
+            {c2.x - a2 + d * sqrt(2), c2.y + a2, c2.z - d},
+            {c2.x - a2, c2.y + a2 - d * sqrt(2), c2.z + d},
+            {c2.x - a2, c2.y + a2 - d * sqrt(2), c2.z - d},
+
+            {c2.x - a2 + d * sqrt(2), c2.y - a2, c2.z + d},
+            {c2.x - a2 + d * sqrt(2), c2.y - a2, c2.z - d},
+            {c2.x - a2, c2.y - a2 + d * sqrt(2), c2.z + d},
+            {c2.x - a2, c2.y - a2 + d * sqrt(2), c2.z - d},
+    };
+
+    //вершины
+
+    trigs[46] = { dots2[0], dots2[1], dots2[2], clr4, coef_refl4, coef_transp4 };
+    trigs[47] = { dots2[3], dots2[2], dots2[1], clr4, coef_refl4, coef_transp4 };
+
+    trigs[48] = { dots2[4], dots2[6], dots2[5], clr4, coef_refl4, coef_transp4 };
+    trigs[49] = { dots2[7], dots2[5], dots2[6], clr4, coef_refl4, coef_transp4 };
+
+    trigs[50] = { dots2[8], dots2[10], dots2[9], clr4, coef_refl4, coef_transp4 };
+    trigs[51] = { dots2[11], dots2[9], dots2[10], clr4, coef_refl4, coef_transp4 };
+
+    trigs[52] = { dots2[14], dots2[12], dots2[15], clr4, coef_refl4, coef_transp4 };
+    trigs[53] = { dots2[13], dots2[15], dots2[12], clr4, coef_refl4, coef_transp4 };
+
+    trigs[54] = { dots2[16], dots2[17], dots2[18], clr4, coef_refl4, coef_transp4 };
+    trigs[55] = { dots2[19], dots2[18], dots2[17], clr4, coef_refl4, coef_transp4 };
+
+    trigs[56] = { dots2[20], dots2[23], dots2[21], clr4, coef_refl4, coef_transp4 };
+    trigs[57] = { dots2[23], dots2[21], dots2[22], clr4, coef_refl4, coef_transp4 };
+
+    //рёбра
+
+    trigs[58] = { dots2[0], dots2[10], dots2[1], clr4, coef_refl4, coef_transp4, true, 59, number_of_lights2 };
+    trigs[59] = { dots2[8], dots2[1], dots2[10], clr4, coef_refl4, coef_transp4, true, 58, number_of_lights2 };
+
+    trigs[60] = { dots2[2], dots2[12], dots2[0], clr4, coef_refl4, coef_transp4, true, 61, number_of_lights2 };
+    trigs[61] = { dots2[14], dots2[0], dots2[12], clr4, coef_refl4, coef_transp4, true, 60, number_of_lights2 };
+
+    trigs[62] = { dots2[18], dots2[3], dots2[16], clr4, coef_refl4, coef_transp4, true, 63, number_of_lights2 };
+    trigs[63] = { dots2[1], dots2[16], dots2[3], clr4, coef_refl4, coef_transp4, true, 62, number_of_lights2 };
+
+    trigs[64] = { dots2[3], dots2[22], dots2[2], clr4, coef_refl4, coef_transp4, true, 65, number_of_lights2 };
+    trigs[65] = { dots2[20], dots2[2], dots2[22], clr4, coef_refl4, coef_transp4, true, 64, number_of_lights2 };
+
+
+    trigs[66] = { dots2[11], dots2[4], dots2[9], clr4, coef_refl4, coef_transp4, true, 67, number_of_lights2 };
+    trigs[67] = { dots2[5], dots2[9], dots2[4], clr4, coef_refl4, coef_transp4, true, 66, number_of_lights2 };
+
+    trigs[68] = { dots2[4], dots2[15], dots2[6], clr4, coef_refl4, coef_transp4, true, 69, number_of_lights2 };
+    trigs[69] = { dots2[13], dots2[6], dots2[15], clr4, coef_refl4, coef_transp4, true, 68, number_of_lights2 };
+
+    trigs[70] = { dots2[7], dots2[19], dots2[5], clr4, coef_refl4, coef_transp4, true, 71, number_of_lights2 };
+    trigs[71] = { dots2[17], dots2[5], dots2[19], clr4, coef_refl4, coef_transp4, true, 70, number_of_lights2 };
+
+    trigs[72] = { dots2[23], dots2[7], dots2[21], clr4, coef_refl4, coef_transp4, true, 73, number_of_lights2 };
+    trigs[73] = { dots2[6], dots2[21], dots2[7], clr4, coef_refl4, coef_transp4, true, 72, number_of_lights2 };
+
+
+    trigs[74] = { dots2[10], dots2[14], dots2[11], clr4, coef_refl4, coef_transp4, true, 75, number_of_lights2 };
+    trigs[75] = { dots2[15], dots2[11], dots2[14], clr4, coef_refl4, coef_transp4, true, 74, number_of_lights2 };
+
+    trigs[76] = { dots2[12], dots2[20], dots2[13], clr4, coef_refl4, coef_transp4, true, 77, number_of_lights2 };
+    trigs[77] = { dots2[21], dots2[13], dots2[20], clr4, coef_refl4, coef_transp4, true, 76, number_of_lights2 };
+
+    trigs[78] = { dots2[22], dots2[18], dots2[23], clr4, coef_refl4, coef_transp4, true, 79, number_of_lights2 };
+    trigs[79] = { dots2[19], dots2[23], dots2[18], clr4, coef_refl4, coef_transp4, true, 78, number_of_lights2 };
+
+    trigs[80] = { dots2[16], dots2[8], dots2[17], clr4, coef_refl4, coef_transp4, true, 81, number_of_lights2 };
+    trigs[81] = { dots2[9], dots2[17], dots2[8], clr4, coef_refl4, coef_transp4, true, 80, number_of_lights2 };
+
+    //грани
+    trigs[82] = { dots2[0], dots2[14], dots2[10], clr2, coef_refl2, coef_transp2 };
+    trigs[83] = { dots2[4], dots2[11], dots2[15], clr2, coef_refl2, coef_transp2 };
+
+    trigs[84] = { dots2[1], dots2[8], dots2[16], clr2, coef_refl2, coef_transp2 };
+    trigs[85] = { dots2[5], dots2[17], dots2[9], clr2, coef_refl2, coef_transp2 };
+
+    trigs[86] = { dots2[3], dots2[18], dots2[22], clr2, coef_refl2, coef_transp2 };
+    trigs[87] = { dots2[7], dots2[23], dots2[19], clr2, coef_refl2, coef_transp2 };
+
+    trigs[88] = { dots2[2], dots2[20], dots2[12], clr2, coef_refl2, coef_transp2 };
+    trigs[89] = { dots2[6], dots2[13], dots2[21], clr2, coef_refl2, coef_transp2 };
+
+
+    //икосаэдр
+
+    double phi = (1.0 + sqrt(5.0)) / 2.0; // золотое сечение
+
+    // точки икосаэдра
+    vec3 dots3[12] = {
+            {phi, 1, 0},
+
+            {phi, -1, 0},
+            {1, 0, phi},
+            {0, phi, 1},
+            {0, phi, -1},
+            {1, 0, -phi},
+
+
+            {-phi, -1, 0},
+
+            {0, -phi, 1},
+            {-1, 0, phi},
+            {-phi, 1, 0},
+            {-1, 0, -phi},
+            {0, -phi, -1}
+    };
+
+    for (int i = 0; i < 12; i++) {
+        // продолжение формулы для координат икосаэдра с центром (0, 0, 0) и радиусом описанной окружности 1
+        dots3[i].x = dots3[i].x / sqrt(1 + phi * phi);
+        dots3[i].y = dots3[i].y / sqrt(1 + phi * phi);
+        dots3[i].z = dots3[i].z / sqrt(1 + phi * phi);
+        // приводим в соответствие для нашего радиуса
+        dots3[i].x = dots3[i].x * r3;
+        dots3[i].y = dots3[i].y * r3;
+        dots3[i].z = dots3[i].z * r3;
+        // смещаем в наш центр
+        dots3[i].x = dots3[i].x + c3.x;
+        dots3[i].y = dots3[i].y + c3.y;
+        dots3[i].z = dots3[i].z + c3.z;
+    }
+
+    //грани
+
+    d = r3 / 10.0;
+
+    if (d > 1.0) {
+        d = 1.0 / d;
+    }
+
+    // новые точки икосаэдра, учитывая ширину граней
+
+    make_points_icos(dots3[1], dots3[0], dots3[2], d, 0);
+    make_points_icos(dots3[0], dots3[3], dots3[2], d, 3);
+    make_points_icos(dots3[2], dots3[3], dots3[8], d, 6);
+    make_points_icos(dots3[8], dots3[9], dots3[6], d, 9);
+    make_points_icos(dots3[6], dots3[10], dots3[11], d, 12);
+    make_points_icos(dots3[11], dots3[5], dots3[1], d, 15);
+    make_points_icos(dots3[1], dots3[5], dots3[0], d, 18);
+    make_points_icos(dots3[8], dots3[3], dots3[9], d, 21);
+    make_points_icos(dots3[6], dots3[9], dots3[10], d, 24);
+    make_points_icos(dots3[11], dots3[10], dots3[5], d, 27);
+
+    make_points_icos(dots3[7], dots3[1], dots3[2], d, 30);
+    make_points_icos(dots3[7], dots3[2], dots3[8], d, 33);
+    make_points_icos(dots3[7], dots3[8], dots3[6], d, 36);
+    make_points_icos(dots3[7], dots3[6], dots3[11], d, 39);
+    make_points_icos(dots3[7], dots3[11], dots3[1], d, 42);
+
+    make_points_icos(dots3[4], dots3[0], dots3[5], d, 45);
+    make_points_icos(dots3[4], dots3[5], dots3[10], d, 48);
+    make_points_icos(dots3[4], dots3[10], dots3[9], d, 51);
+    make_points_icos(dots3[4], dots3[9], dots3[3], d, 54);
+    make_points_icos(dots3[4], dots3[3], dots3[0], d, 57);
+
+    // грани
+
+    for (int i = 0; i < 60;i = i + 3) {
+        trigs[90 + i / 3] = { dots3_1[i], dots3_1[i + 1], dots3_1[i + 2], clr3, coef_refl3, coef_transp3 };
+    }
+
+    // вершины
+
+    trigs[111] = { dots3_1[55], dots3_1[10], dots3_1[23], clr4, coef_refl4, coef_transp4 };
+    trigs[112] = { dots3_1[55], dots3_1[25], dots3_1[10], clr4, coef_refl4, coef_transp4 };
+    trigs[113] = { dots3_1[55], dots3_1[53], dots3_1[25], clr4, coef_refl4, coef_transp4 };
+
+    trigs[114] = { dots3_1[24], dots3_1[38], dots3_1[11], clr4, coef_refl4, coef_transp4 };
+    trigs[115] = { dots3_1[24], dots3_1[40], dots3_1[38], clr4, coef_refl4, coef_transp4 };
+    trigs[116] = { dots3_1[25], dots3_1[12], dots3_1[40], clr4, coef_refl4, coef_transp4 };
+
+    trigs[117] = { dots3_1[39], dots3_1[33], dots3_1[36], clr4, coef_refl4, coef_transp4 };
+    trigs[118] = { dots3_1[39], dots3_1[30], dots3_1[33], clr4, coef_refl4, coef_transp4 };
+    trigs[119] = { dots3_1[39], dots3_1[42], dots3_1[30], clr4, coef_refl4, coef_transp4 };
+
+    trigs[120] = { dots3_1[32], dots3_1[6], dots3_1[34], clr4, coef_refl4, coef_transp4 };
+    trigs[121] = { dots3_1[32], dots3_1[5], dots3_1[6], clr4, coef_refl4, coef_transp4 };
+    trigs[122] = { dots3_1[32], dots3_1[2], dots3_1[5], clr4, coef_refl4, coef_transp4 };
+
+    trigs[123] = { dots3_1[4], dots3_1[22], dots3_1[7], clr4, coef_refl4, coef_transp4 };
+    trigs[124] = { dots3_1[4], dots3_1[56], dots3_1[22], clr4, coef_refl4, coef_transp4 };
+    trigs[125] = { dots3_1[4], dots3_1[58], dots3_1[56], clr4, coef_refl4, coef_transp4 };
+
+    trigs[126] = { dots3_1[8], dots3_1[37], dots3_1[35], clr4, coef_refl4, coef_transp4 };
+    trigs[127] = { dots3_1[8], dots3_1[9], dots3_1[37], clr4, coef_refl4, coef_transp4 };
+    trigs[128] = { dots3_1[8], dots3_1[21], dots3_1[9], clr4, coef_refl4, coef_transp4 };
+
+    trigs[129] = { dots3_1[45], dots3_1[54], dots3_1[57], clr4, coef_refl4, coef_transp4 };
+    trigs[130] = { dots3_1[45], dots3_1[51], dots3_1[54], clr4, coef_refl4, coef_transp4 };
+    trigs[131] = { dots3_1[45], dots3_1[48], dots3_1[51], clr4, coef_refl4, coef_transp4 };
+
+    trigs[132] = { dots3_1[27], dots3_1[41], dots3_1[14], clr4, coef_refl4, coef_transp4 };
+    trigs[133] = { dots3_1[27], dots3_1[43], dots3_1[41], clr4, coef_refl4, coef_transp4 };
+    trigs[134] = { dots3_1[27], dots3_1[15], dots3_1[43], clr4, coef_refl4, coef_transp4 };
+
+    trigs[135] = { dots3_1[17], dots3_1[31], dots3_1[44], clr4, coef_refl4, coef_transp4 };
+    trigs[136] = { dots3_1[17], dots3_1[0], dots3_1[31], clr4, coef_refl4, coef_transp4 };
+    trigs[137] = { dots3_1[17], dots3_1[18], dots3_1[0], clr4, coef_refl4, coef_transp4 };
+
+    trigs[138] = { dots3_1[20], dots3_1[3], dots3_1[1], clr4, coef_refl4, coef_transp4 };
+    trigs[139] = { dots3_1[20], dots3_1[59], dots3_1[3], clr4, coef_refl4, coef_transp4 };
+    trigs[140] = { dots3_1[20], dots3_1[46], dots3_1[59], clr4, coef_refl4, coef_transp4 };
+
+    trigs[141] = { dots3_1[50], dots3_1[26], dots3_1[52], clr4, coef_refl4, coef_transp4 };
+    trigs[142] = { dots3_1[50], dots3_1[13], dots3_1[26], clr4, coef_refl4, coef_transp4 };
+    trigs[143] = { dots3_1[50], dots3_1[28], dots3_1[13], clr4, coef_refl4, coef_transp4 };
+
+    trigs[144] = { dots3_1[29], dots3_1[19], dots3_1[16], clr4, coef_refl4, coef_transp4 };
+    trigs[145] = { dots3_1[29], dots3_1[47], dots3_1[19], clr4, coef_refl4, coef_transp4 };
+    trigs[146] = { dots3_1[19], dots3_1[49], dots3_1[47], clr4, coef_refl4, coef_transp4 };
+
+    // рёбра
+
+    trigs[147] = { dots3_1[44], dots3_1[43], dots3_1[17], clr4, coef_refl4, coef_transp4, true, 148, number_of_lights3 };
+    trigs[148] = { dots3_1[15], dots3_1[17], dots3_1[43], clr4, coef_refl4, coef_transp4, true, 147, number_of_lights3 };
+
+    trigs[149] = { dots3_1[17], dots3_1[16], dots3_1[18], clr4, coef_refl4, coef_transp4, true, 150, number_of_lights3 };
+    trigs[150] = { dots3_1[19], dots3_1[18], dots3_1[16], clr4, coef_refl4, coef_transp4, true, 149, number_of_lights3 };
+
+    trigs[151] = { dots3_1[18], dots3_1[20], dots3_1[0], clr4, coef_refl4, coef_transp4, true, 152, number_of_lights3 };
+    trigs[152] = { dots3_1[1], dots3_1[0], dots3_1[20], clr4, coef_refl4, coef_transp4, true, 151, number_of_lights3 };
+
+    trigs[153] = { dots3_1[0], dots3_1[2], dots3_1[31], clr4, coef_refl4, coef_transp4, true, 154, number_of_lights3 };
+    trigs[154] = { dots3_1[32], dots3_1[31], dots3_1[2], clr4, coef_refl4, coef_transp4, true, 153, number_of_lights3 };
+
+    trigs[155] = { dots3_1[31], dots3_1[30], dots3_1[44], clr4, coef_refl4, coef_transp4, true, 156, number_of_lights3 };
+    trigs[156] = { dots3_1[42], dots3_1[44], dots3_1[30], clr4, coef_refl4, coef_transp4, true, 155, number_of_lights3 };
+
+
+    trigs[157] = { dots3_1[39], dots3_1[41], dots3_1[42], clr4, coef_refl4, coef_transp4, true, 158, number_of_lights3 };
+    trigs[158] = { dots3_1[43], dots3_1[42], dots3_1[41], clr4, coef_refl4, coef_transp4, true, 157, number_of_lights3 };
+
+    trigs[159] = { dots3_1[27], dots3_1[29], dots3_1[15], clr4, coef_refl4, coef_transp4, true, 160, number_of_lights3 };
+    trigs[160] = { dots3_1[16], dots3_1[15], dots3_1[29], clr4, coef_refl4, coef_transp4, true, 159, number_of_lights3 };
+
+    trigs[161] = { dots3_1[47], dots3_1[46], dots3_1[19], clr4, coef_refl4, coef_transp4, true, 162, number_of_lights3 };
+    trigs[162] = { dots3_1[20], dots3_1[19], dots3_1[46], clr4, coef_refl4, coef_transp4, true, 161, number_of_lights3 };
+
+    trigs[163] = { dots3_1[3], dots3_1[5], dots3_1[1], clr4, coef_refl4, coef_transp4, true, 164, number_of_lights3 };
+    trigs[164] = { dots3_1[2], dots3_1[1], dots3_1[5], clr4, coef_refl4, coef_transp4, true, 163, number_of_lights3 };
+
+    trigs[165] = { dots3_1[34], dots3_1[33], dots3_1[32], clr4, coef_refl4, coef_transp4, true, 166, number_of_lights3 };
+    trigs[166] = { dots3_1[30], dots3_1[32], dots3_1[33], clr4, coef_refl4, coef_transp4, true, 165, number_of_lights3 };
+
+
+    trigs[167] = { dots3_1[33], dots3_1[35], dots3_1[36], clr4, coef_refl4, coef_transp4, true, 168, number_of_lights3 };
+    trigs[168] = { dots3_1[37], dots3_1[36], dots3_1[35], clr4, coef_refl4, coef_transp4, true, 167, number_of_lights3 };
+
+    trigs[169] = { dots3_1[41], dots3_1[40], dots3_1[14], clr4, coef_refl4, coef_transp4, true, 170, number_of_lights3 };
+    trigs[170] = { dots3_1[12], dots3_1[14], dots3_1[40], clr4, coef_refl4, coef_transp4, true, 169, number_of_lights3 };
+
+    trigs[171] = { dots3_1[29], dots3_1[28], dots3_1[49], clr4, coef_refl4, coef_transp4, true, 172, number_of_lights3 };
+    trigs[172] = { dots3_1[50], dots3_1[49], dots3_1[28], clr4, coef_refl4, coef_transp4, true, 171, number_of_lights3 };
+
+    trigs[173] = { dots3_1[46], dots3_1[45], dots3_1[59], clr4, coef_refl4, coef_transp4, true, 174, number_of_lights3 };
+    trigs[174] = { dots3_1[57], dots3_1[59], dots3_1[45], clr4, coef_refl4, coef_transp4, true, 173, number_of_lights3 };
+
+    trigs[175] = { dots3_1[5], dots3_1[4], dots3_1[6], clr4, coef_refl4, coef_transp4, true, 176, number_of_lights3 };
+    trigs[176] = { dots3_1[7], dots3_1[6], dots3_1[4], clr4, coef_refl4, coef_transp4, true, 175, number_of_lights3 };
+
+
+    trigs[177] = { dots3_1[36], dots3_1[38], dots3_1[39], clr4, coef_refl4, coef_transp4, true, 178, number_of_lights3 };
+    trigs[178] = { dots3_1[40], dots3_1[39], dots3_1[38], clr4, coef_refl4, coef_transp4, true, 177, number_of_lights3 };
+
+    trigs[179] = { dots3_1[14], dots3_1[13], dots3_1[27], clr4, coef_refl4, coef_transp4, true, 180, number_of_lights3 };
+    trigs[180] = { dots3_1[28], dots3_1[27], dots3_1[13], clr4, coef_refl4, coef_transp4, true, 179, number_of_lights3 };
+
+    trigs[181] = { dots3_1[49], dots3_1[48], dots3_1[47], clr4, coef_refl4, coef_transp4, true, 182, number_of_lights3 };
+    trigs[182] = { dots3_1[45], dots3_1[47], dots3_1[48], clr4, coef_refl4, coef_transp4, true, 181, number_of_lights3 };
+
+    trigs[183] = { dots3_1[59], dots3_1[58], dots3_1[3], clr4, coef_refl4, coef_transp4, true, 184, number_of_lights3 };
+    trigs[184] = { dots3_1[4], dots3_1[3], dots3_1[58], clr4, coef_refl4, coef_transp4, true, 183, number_of_lights3 };
+
+    trigs[185] = { dots3_1[6], dots3_1[8], dots3_1[34], clr4, coef_refl4, coef_transp4, true, 186, number_of_lights3 };
+    trigs[186] = { dots3_1[35], dots3_1[34], dots3_1[8], clr4, coef_refl4, coef_transp4, true, 185, number_of_lights3 };
+
+
+    trigs[187] = { dots3_1[9], dots3_1[11], dots3_1[37], clr4, coef_refl4, coef_transp4, true, 188, number_of_lights3 };
+    trigs[188] = { dots3_1[38], dots3_1[37], dots3_1[11], clr4, coef_refl4, coef_transp4, true, 187, number_of_lights3 };
+
+    trigs[189] = { dots3_1[24], dots3_1[26], dots3_1[12], clr4, coef_refl4, coef_transp4, true, 190, number_of_lights3 };
+    trigs[190] = { dots3_1[13], dots3_1[12], dots3_1[26], clr4, coef_refl4, coef_transp4, true, 189, number_of_lights3 };
+
+    trigs[191] = { dots3_1[52], dots3_1[51], dots3_1[50], clr4, coef_refl4, coef_transp4, true, 192, number_of_lights3 };
+    trigs[192] = { dots3_1[48], dots3_1[50], dots3_1[51], clr4, coef_refl4, coef_transp4, true, 191, number_of_lights3 };
+
+    trigs[193] = { dots3_1[54], dots3_1[56], dots3_1[57], clr4, coef_refl4, coef_transp4, true, 194, number_of_lights3 };
+    trigs[194] = { dots3_1[58], dots3_1[57], dots3_1[56], clr4, coef_refl4, coef_transp4, true, 193, number_of_lights3 };
+
+    trigs[195] = { dots3_1[22], dots3_1[21], dots3_1[7], clr4, coef_refl4, coef_transp4, true, 196, number_of_lights3 };
+    trigs[196] = { dots3_1[8], dots3_1[7], dots3_1[21], clr4, coef_refl4, coef_transp4, true, 195, number_of_lights3 };
+
+
+    trigs[197] = { dots3_1[25], dots3_1[24], dots3_1[10], clr4, coef_refl4, coef_transp4, true, 198, number_of_lights3 };
+    trigs[198] = { dots3_1[11], dots3_1[10], dots3_1[24], clr4, coef_refl4, coef_transp4, true, 197, number_of_lights3 };
+
+    trigs[199] = { dots3_1[10], dots3_1[9], dots3_1[23], clr4, coef_refl4, coef_transp4, true, 200, number_of_lights3 };
+    trigs[200] = { dots3_1[21], dots3_1[23], dots3_1[9], clr4, coef_refl4, coef_transp4, true, 199, number_of_lights3 };
+
+    trigs[201] = { dots3_1[23], dots3_1[22], dots3_1[55], clr4, coef_refl4, coef_transp4, true, 202, number_of_lights3 };
+    trigs[202] = { dots3_1[56], dots3_1[55], dots3_1[22], clr4, coef_refl4, coef_transp4, true, 201, number_of_lights3 };
+
+    trigs[203] = { dots3_1[55], dots3_1[54], dots3_1[53], clr4, coef_refl4, coef_transp4, true, 204, number_of_lights3 };
+    trigs[204] = { dots3_1[51], dots3_1[53], dots3_1[54], clr4, coef_refl4, coef_transp4, true, 203, number_of_lights3 };
+
+    trigs[205] = { dots3_1[53], dots3_1[52], dots3_1[25], clr4, coef_refl4, coef_transp4, true, 206, number_of_lights3 };
+    trigs[206] = { dots3_1[26], dots3_1[25], dots3_1[52], clr4, coef_refl4, coef_transp4, true, 205, number_of_lights3 };
+
+    for(int i=0;i<N;i++){
+	print(trigs[i].a);
+	print(trigs[i].b);
+	print(trigs[i].c);
+	print(trigs[i].a);
+	printf("\n\n\n");
+    }
+    printf("\n\n\n");
+
+}
+
+
+/*
+in[w * h]
+out[2 * w * h]
+
+biff[20 * w * h]
+*/
+void render(vec3 pc, vec3 pv, int w, int h, double angle) {
+	int i, j;
+	double dw = 2.0 / (w - 1.0);
+	double dh = 2.0 / (h - 1.0);
+	double z = 1.0 / tan(angle * M_PI / 360.0);
+	vec3 bz = norm(diff(pv, pc));
+	vec3 bx = norm(prod(bz, {0.0, 0.0, 1.0}));
+	vec3 by = norm(prod(bx, bz));
+	for(i = 0; i < w; i++)	
+		for(j = 0; j < h; j++) {
+			vec3 v = {-1.0 + dw * i, (-1.0 + dh * j) * h / w, z};
+			vec3 dir = mult(bx, by, bz, v);
+			//print(pc);
+			//print(add(pc, dir));
+			//printf("\n\n\n"); 
+		}
+	print(pc);
+	print(pv);
+	printf("\n\n\n");
+}
+
+
+int main() {
+	trigs = (trig*)malloc(sizeof(trig) * N);
+	int k, w, h;
+
+    string res_path1;
+    double angle, r_0_c, z_0_c, phi_0_c, A_r_c, A_z_c, w_r_c, w_z_c, w_phi_c, p_r_c, p_z_c,
+        r_0_n, z_0_n, phi_0_n, A_r_n, A_z_n, w_r_n, w_z_n, w_phi_n, p_r_n, p_z_n;
+
+    vec3 c1, c2, c3;
+    double4 clr1, clr2, clr3;
+    double r1, r2, r3, coef_refl1, coef_refl2, coef_refl3, coef_transp1, coef_transp2, coef_transp3;
+    int number_of_lights1, number_of_lights2, number_of_lights3;
+
+    vec3 pnt1, pnt2, pnt3, pnt4;
+    double4 clr_fl;
+    double coef_fl;
+    string floor_path1;
+
+    int max_rec, sqrt_ssaa;
+
+    cin >> k;
+
+    cin >> res_path1;
+    const char* res_path = res_path1.c_str();
+
+    cin >> w >> h >> angle;
+
+    cin >> r_0_c >> z_0_c >> phi_0_c;
+    cin >> A_r_c >> A_z_c;
+    cin >> w_r_c >> w_z_c >> w_phi_c;
+    cin >> p_r_c >> p_z_c;
+
+    cin >> r_0_n >> z_0_n >> phi_0_n;
+    cin >> A_r_n >> A_z_n;
+    cin >> w_r_n >> w_z_n >> w_phi_n;
+    cin >> p_r_n >> p_z_n;
+
+    cin >> c1.x >> c1.y >> c1.z;
+    cin >> clr1.x >> clr1.y >> clr1.z;
+    cin >> r1 >> coef_refl1 >> coef_transp1 >> number_of_lights1;
+
+    cin >> c2.x >> c2.y >> c2.z;
+    cin >> clr2.x >> clr2.y >> clr2.z;
+    cin >> r2 >> coef_refl2 >> coef_transp2 >> number_of_lights2;
+
+    cin >> c3.x >> c3.y >> c3.z;
+    cin >> clr3.x >> clr3.y >> clr3.z;
+    cin >> r3 >> coef_refl3 >> coef_transp3 >> number_of_lights3;
+
+    cin >> pnt1.x >> pnt1.y >> pnt1.z;
+    cin >> pnt2.x >> pnt2.y >> pnt2.z;
+    cin >> pnt3.x >> pnt3.y >> pnt3.z;
+    cin >> pnt4.x >> pnt4.y >> pnt4.z;
+
+    cin >> floor_path1;
+    const char* floor_path = floor_path1.c_str();
+
+    cin >> clr_fl.x >> clr_fl.y >> clr_fl.z;
+    cin >> coef_fl;
+
+    cin >> light_numb;
+    lights = (light*)malloc(sizeof(light) * light_numb);
+    for (int i = 0; i < light_numb; i++) {
+        cin >> lights[i].pos.x >> lights[i].pos.y >> lights[i].pos.z;
+        cin >> lights[i].color.x >> lights[i].color.y >> lights[i].color.z;
+    }
+
+    cin >> max_rec;
+    cin >> sqrt_ssaa;
+
+    build_space(c1, clr1, r1, coef_refl1, coef_transp1, number_of_lights1,
+        c2, clr2, r2, coef_refl2, coef_transp2, number_of_lights2,
+        c3, clr3, r3, coef_refl3, coef_transp3, number_of_lights3,
+        pnt1, pnt2, pnt3, pnt4, clr_fl, coef_fl, floor_path);
+
+	for(i = 0; i < k; k++) { 
+		double t = 2 * M_PI * i / (k - 1);
+
+        	vec3 pc = to_normal(
+           		r_0_c + A_r_c * sin(w_r_c * t + p_r_c),
+            		phi_0_c + w_phi_c * t,
+            		z_0_c + A_z_c * sin(w_z_c * t + p_z_c)
+        	);
+
+        	vec3 pv = to_normal(
+            		r_0_n + A_r_n * sin(w_r_n * t + p_r_n),
+            		phi_0_n + w_phi_n * t,
+            		z_0_n + A_z_n * sin(w_z_n * t + p_z_n)
+        	);
+		render(pc, pv, w, h, 120.0);
+	}
+	return 0;
+}
